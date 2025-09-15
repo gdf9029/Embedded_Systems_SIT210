@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arduino LED Control</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+            color: #333;
+        }
+        .container {
+            text-align: center;
+            background-color: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            margin-top: 0;
+            color: #1c1e21;
+        }
+        .button-group {
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            color: white;
+            transition: background-color 0.3s ease, transform 0.1s ease;
+        }
+        button:active {
+            transform: scale(0.98);
+        }
+        #btn-red { background-color: #e74c3c; }
+        #btn-red:hover { background-color: #c0392b; }
+        #btn-green { background-color: #2ecc71; }
+        #btn-green:hover { background-color: #27ae60; }
+        #btn-yellow { background-color: #f8df00; }
+        #btn-yellow:hover { background-color: #dac50f; }
+        #status {
+            margin-top: 25px;
+            font-size: 16px;
+            color: #666;
+            min-height: 24px;
+        }
+    </style>
+</head>
+<body>
+<!-- Each button calls the toggleLedState function -->
+    <div class="container">
+        <h1>Remote Traffic Light Control</h1>
+        <div class="button-group">
+            <button id="btn-red" onclick="toggleLedState('red')">Toggle Red LED</button>
+            <button id="btn-yellow" onclick="toggleLedState('yellow')">Toggle Yellow LED</button>
+            <button id="btn-green" onclick="toggleLedState('green')">Toggle Green LED</button>
+            
+        </div>
+        <p id="status">Click a button to control an LED.</p>
+    </div>
+    <!-- Java script integration  -->
+    <script>
+
+        const firebaseURL = "https://traffic-light-highdistinction-default-rtdb.asia-southeast1.firebasedatabase.app/leds.json";
+    //    This is where i have put my firebase database reference link
+
+        const statusElement = document.getElementById('status');
+
+        async function toggleLedState(color) { // Toggle state LED function is called whenever a button is clicked using a GET request
+            // Construct the specific URL for the LED we want to control
+            const ledURL = firebaseURL.replace('.json', `/${color}.json`);
+            statusElement.textContent = `Checking state for ${color} LED...`;// Status message is updated to inform the user that the state is being checked
+
+            try {
+                // 1. GET the current state of the LED from Firebase
+                let response = await fetch(ledURL); // fetch function is used to make web requests and here it is used to send a GET request to retrieve the current state of the LED
+                if (!response.ok) {
+                    throw new Error(`Firebase returned an error: ${response.statusText}`);
+                }
+                let currentState = await response.json();
+                // The JSON response is parsed to get the current state of the LED (true for ON, false for OFF)
+                // 2. Determine the NEW state (the opposite of the current state)
+                const newState = !currentState;
+                // It acts as a toggle switch here to turn on/off the LED
+                statusElement.textContent = `Setting ${color} LED to ${newState ? 'ON' : 'OFF'}...`;
+
+                // 3. PUT the new state back to Firebase to update it
+                // the fetch function is used to make web requests and here it is used to send a PUT request to replace the current state with the new state
+                response = await fetch(ledURL, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(newState) // Send the new boolean value as i chose boolean data type in firebase earlier
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Failed to update Firebase: ${response.statusText}`);
+                }
+
+                const result = await response.json();
+                statusElement.textContent = `${color.charAt(0).toUpperCase() + color.slice(1)} LED is now ${result ? 'ON' : 'OFF'}.`;
+
+            } catch (error) {
+                console.error("Error toggling LED state:", error);
+                statusElement.textContent = `Error: ${error.message}`;
+            }
+        }
+    </script>
+
+</body>
+</html>
