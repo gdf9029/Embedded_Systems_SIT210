@@ -1,58 +1,47 @@
-// Task4_3D_from_4_2C.ino
-// Nano 33 IoT (SAMD21) - Multiple external interrupts + timer interrupt
-// Requires: SAMDTimerInterrupt library 
+// Task4_3D_MinimalFlags_Timer.ino
+// Nano 33 IoT (SAMD21) - Minimal change from 4.2C to meet 4.3D
+// - Three external interrupts: button, PIR, sensor2
+// - One hardware timer interrupt that sets a flag
+// - All heavy work, debouncing, and Serial I/O done in loop()
+// Requires: SAMDTimerInterrupt library (install via Library Manager)
 
 #include <SAMDTimerInterrupt.h>
 
 
-const int BUTTON_PIN = 2; // interrupt pin for button (with INPUT_PULLUP)
-const int PIR_PIN    = 3; // sensor 1 (e.g., PIR)
-const int SND_PIN    = 4; // sensor 2 (e.g., sound or another digital sensor)
-const int LED1_PIN   = 5; // LED toggled by button
-const int LED2_PIN   = 6; // LED toggled by PIR
-const int LED3_PIN   = 7; // LED toggled by timer
+const int BUTTON_PIN = 2; // button (use INPUT_PULLUP)
+const int PIR_PIN    = 3; // PIR sensor
+const int SND_PIN    = 4; // second digital sensor
+const int LED1_PIN   = 5; // controlled by button
+const int LED2_PIN   = 6; // controlled by PIR
+const int LED3_PIN   = 7; // controlled by timer
 
-// --- Event types for ring buffer ---
-enum Event : uint8_t { EVT_NONE = 0, EVT_BUTTON = 1, EVT_PIR = 2, EVT_SND = 3, EVT_TIMER = 4 };
+// --- Volatile flags set by ISRs ---
+volatile bool buttonFlag = false;
+volatile bool pirFlag    = false;
+volatile bool sndFlag    = false;
+volatile bool timerFlag  = false;
 
-// --- Simple lock-free ring buffer (size 8) ---
-volatile Event evBuf[8];
-volatile uint8_t evHead = 0; // consumer index
-volatile uint8_t evTail = 0; // producer index
-#define EV_NEXT(i) (((i) + 1) & 7)
-
-// --- Debounce/state variables (main loop context) ---
+// --- Debounce / timing (handled in loop) ---
 unsigned long lastButtonTime = 0;
-unsigned long lastPirTime = 0;
-unsigned long lastSndTime = 0;
-const unsigned long DEBOUNCE_MS = 200; // debounce interval used in loop()
+unsigned long lastPirTime    = 0;
+unsigned long lastSndTime    = 0;
+const unsigned long DEBOUNCE_MS = 200; // debounce interval in ms
 
-// --- Timer setup (SAMDTimerInterrupt) ---
-SAMDTimer Timer(TIMER_TC3); // TC3 usually available on Nano 33 IoT
-const uint32_t TIMER_MS = 1000; // timer interval in milliseconds
+// --- Timer setup ---
+SAMDTimer Timer(TIMER_TC3);       // TC3 commonly available on Nano 33 IoT
+const uint32_t TIMER_MS = 1000;   // timer interval in milliseconds
 
-// --- Utility: push event into buffer (called from ISRs) ---
-inline void pushEvent(Event e) {
-  uint8_t next = EV_NEXT(evTail);
-  if (next == evHead) {
-    // buffer full: drop oldest event (advance head)
-    evHead = EV_NEXT(evHead);
-  }
-  evBuf[evTail] = e;
-  evTail = next;
-}
-
-// --- ISRs (minimal) ---
-void isr_button() { pushEvent(EVT_BUTTON); }
-void isr_pir()    { pushEvent(EVT_PIR); }
-void isr_snd()    { pushEvent(EVT_SND); }
-void isr_timer()  { pushEvent(EVT_TIMER); }
+// --- ISRs (minimal: only set flags) ---
+void isr_button() { buttonFlag = true; }
+void isr_pir()    { pirFlag = true;    }
+void isr_snd()    { sndFlag = true;    }
+void isr_timer()  { timerFlag = true;  }
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial); // optional for debugging
+  while (!Serial); // optional for debugging; remove for headless runs
 
-  // pins
+  // Configure pins
   pinMode(LED1_PIN, OUTPUT);
   pinMode(LED2_PIN, OUTPUT);
   pinMode(LED3_PIN, OUTPUT);
@@ -61,72 +50,78 @@ void setup() {
   pinMode(PIR_PIN, INPUT);           // PIR module output
   pinMode(SND_PIN, INPUT);           // second digital sensor
 
-  // attach external interrupts
-  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), isr_button, FALLING);
-  attachInterrupt(digitalPinToInterrupt(PIR_PIN), isr_pir, RISING);
-  attachInterrupt(digitalPinToInterrupt(SND_PIN), isr_snd, RISING);
+  // Attach external interrupts
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), isr_button, FALLING); // button press
+  attachInterrupt(digitalPinToInterrupt(PIR_PIN), isr_pir, RISING);        // PIR: motion -> HIGH
+  attachInterrupt(digitalPinToInterrupt(SND_PIN), isr_snd, RISING);        // sensor2: RISING or CHANGE
 
-  // configure timer interrupt (interval in microseconds)
+  // Configure timer interrupt (interval specified in microseconds)
   if (!Timer.attachInterruptInterval(TIMER_MS * 1000, isr_timer)) {
     Serial.println("Timer attach failed");
   }
 
-  Serial.println("Task 4.3D initialized - interrupts + timer running");
+  Serial.println("Task4_3D Minimal Flags + Timer initialized");
 }
 
 void loop() {
-  // consume events until buffer empty
-  while (evHead != evTail) {
-    // read one event atomically (briefly disable interrupts for indices)
+  unsigned long now = millis();
+
+  // --- Handle button events (debounced in loop) ---
+  if (buttonFlag) {
+    // clear flag early to avoid missing a new press while processing
     noInterrupts();
-    uint8_t idx = evHead;
-    Event e = evBuf[idx];
-    evHead = EV_NEXT(idx);
+    buttonFlag = false;
     interrupts();
 
-    unsigned long now = millis();
-
-    switch (e) {
-      case EVT_BUTTON:
-        if (now - lastButtonTime >= DEBOUNCE_MS) {
-          lastButtonTime = now;
-          // toggle LED1
-          digitalWrite(LED1_PIN, !digitalRead(LED1_PIN));
-          Serial.print("Button event: LED1 -> ");
-          Serial.println(digitalRead(LED1_PIN) ? "ON" : "OFF");
-        }
-        break;
-
-      case EVT_PIR:
-        if (now - lastPirTime >= DEBOUNCE_MS) {
-          lastPirTime = now;
-          digitalWrite(LED2_PIN, !digitalRead(LED2_PIN));
-          Serial.print("PIR event: LED2 -> ");
-          Serial.println(digitalRead(LED2_PIN) ? "ON" : "OFF");
-        }
-        break;
-
-      case EVT_SND:
-        if (now - lastSndTime >= DEBOUNCE_MS) {
-          lastSndTime = now;
-          // example action: log only
-          Serial.println("Sensor2 event: detected (logged)");
-        }
-        break;
-
-      case EVT_TIMER:
-        // periodic task: toggle LED3 and print sensor summary
-        digitalWrite(LED3_PIN, !digitalRead(LED3_PIN));
-        Serial.print("Timer tick: LED3 -> ");
-        Serial.println(digitalRead(LED3_PIN) ? "ON" : "OFF");
-        // Could also sample analog sensors here if needed
-        break;
-
-      default:
-        break;
+    if (now - lastButtonTime >= DEBOUNCE_MS) {
+      lastButtonTime = now;
+      digitalWrite(LED1_PIN, !digitalRead(LED1_PIN)); // toggle LED1
+      Serial.print("Button: LED1 -> ");
+      Serial.println(digitalRead(LED1_PIN) ? "ON" : "OFF");
     }
   }
 
-  // small non-blocking idle; keep loop responsive
+  // --- Handle PIR events ---
+  if (pirFlag) {
+    noInterrupts();
+    pirFlag = false;
+    interrupts();
+
+    if (now - lastPirTime >= DEBOUNCE_MS) {
+      lastPirTime = now;
+      digitalWrite(LED2_PIN, !digitalRead(LED2_PIN)); // toggle LED2
+      Serial.print("PIR: LED2 -> ");
+      Serial.println(digitalRead(LED2_PIN) ? "ON" : "OFF");
+    }
+  }
+
+  // --- Handle sensor2 events ---
+  if (sndFlag) {
+    noInterrupts();
+    sndFlag = false;
+    interrupts();
+
+    if (now - lastSndTime >= DEBOUNCE_MS) {
+      lastSndTime = now;
+      // Example action: log only (or toggle another LED if you prefer)
+      Serial.println("Sensor2: event detected (logged)");
+    }
+  }
+
+  // --- Handle timer events ---
+  if (timerFlag) {
+    noInterrupts();
+    timerFlag = false;
+    interrupts();
+
+    // Periodic action: toggle LED3 and log
+    digitalWrite(LED3_PIN, !digitalRead(LED3_PIN));
+    Serial.print("Timer: LED3 -> ");
+    Serial.println(digitalRead(LED3_PIN) ? "ON" : "OFF");
+
+
+  }
+
+  // Keep loop responsive; avoid long blocking delays
   delay(1);
 }
